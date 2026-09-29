@@ -18,7 +18,7 @@ enum class UiMode : uint8_t { Browse, Compose };
 enum class Delivery : uint8_t { Received, Waiting, Delivered, TimedOut };
 enum class Button : uint8_t { Up, Down, Select, Back };
 
-constexpr const char* BUTTON_NAMES[] = {"UP", "DOWN", "UNUSED", "ACTION"};
+constexpr const char* BUTTON_NAMES[] = {"UP", "DOWN"};
 
 struct HistoryEntry {
   String body;
@@ -33,7 +33,6 @@ struct ButtonState {
   bool longSent = false;
   uint32_t changedMs = 0;
   uint32_t pressedMs = 0;
-  uint32_t repeatedMs = 0;
 };
 
 constexpr uint8_t HISTORY_SIZE = 6;
@@ -70,7 +69,7 @@ uint8_t historyCount = 0;
 uint8_t selectedHistory = 0;
 uint32_t recentSequences[RECENT_SIZE] = {};
 uint8_t recentCount = 0;
-ButtonState buttonStates[4];
+ButtonState buttonStates[2];
 UiMode uiMode = UiMode::Browse;
 String draft;
 size_t paletteIndex = 0;
@@ -371,8 +370,8 @@ void longButton(Button button) {
       draft = "";
       setStatus("Draft cancelled");
     } else selectedHistory = 0;
-  } else if (button == Button::Select && uiMode == UiMode::Compose) {
-    sendMessage(draft);  // USB serial "send" command.
+  } else if (button == Button::Select) {
+    shortButton(Button::Select);
   }
   dirty = true;
 }
@@ -398,8 +397,7 @@ void serviceButtons() {
     setStatus("Button expander lost");
     return;
   }
-  for (uint8_t i = 0; i < 4; ++i) {
-    if (i == 2) continue;  // Damaged SELECT wiring; P2 is unused.
+  for (uint8_t i = 0; i < 2; ++i) {
     ButtonState& state = buttonStates[i];
     const bool pressed = (levels & (1u << i)) == 0;
     if (pressed != state.raw) {
@@ -412,25 +410,18 @@ void serviceButtons() {
                     state.stable ? "pressed" : "released", i);
       if (state.stable) {
         state.pressedMs = now;
-        state.repeatedMs = now;
         state.longSent = false;
-        if (i < 2) shortButton(static_cast<Button>(i));
-      } else if (!state.longSent && i == 3) {
-        Serial.println(F("ACTION tap -> select"));
-        shortButton(Button::Select);
+      } else if (!state.longSent) {
+        Serial.printf("%s tap -> move\n", BUTTON_NAMES[i]);
+        shortButton(static_cast<Button>(i));
       }
     }
-    if (state.stable && i == 3 && !state.longSent &&
+    if (state.stable && !state.longSent &&
         now - state.pressedMs >= LONG_PRESS_MS) {
       state.longSent = true;
-      Serial.printf("Button %s long press\n", BUTTON_NAMES[i]);
-      Serial.println(F("ACTION hold -> back"));
-      longButton(Button::Back);
-    }
-    if (state.stable && i < 2 && now - state.pressedMs >= 500 &&
-        now - state.repeatedMs >= 120) {
-      state.repeatedMs = now;
-      shortButton(static_cast<Button>(i));
+      Serial.printf("%s hold -> %s\n", BUTTON_NAMES[i],
+                    i == 0 ? "select" : "back");
+      longButton(i == 0 ? Button::Select : Button::Back);
     }
   }
 }
@@ -463,7 +454,7 @@ void printButtons() {
     return;
   }
   Serial.printf("PCF8574 0x%02X raw=0x%02X; "
-                "P0/UP=%s P1/DOWN=%s P2/unused=%s P3/ACTION=%s\n",
+                "P0/UP=%s P1/DOWN=%s P2/unused=%s P3/unused=%s\n",
                 BUTTON_EXPANDER_ADDRESS, levels,
                 (levels & 0x01) ? "up" : "PRESSED",
                 (levels & 0x02) ? "up" : "PRESSED",
@@ -553,7 +544,7 @@ void render() {
 #endif
     drawLine(8, header);
     drawLine(17, String("History ") + (historyCount ? selectedHistory + 1 : 0) +
-                     "/" + historyCount + " Tap=write");
+                     "/" + historyCount + " Hold Up=write");
     if (historyCount) {
       const HistoryEntry& entry = history[selectedHistory];
       const char* delivery = entry.delivery == Delivery::Received ? "RX" :
@@ -567,7 +558,7 @@ void render() {
     } else {
       drawLine(35, "No messages yet");
     }
-    drawLine(63, "Up/Dn browse Hold=top");
+    drawLine(63, "Tap=move Hold Dn=top");
   } else {
     drawLine(8, String("Compose ") + draft.length() + "/64");
     drawLine(17, statusText);
@@ -581,7 +572,7 @@ void render() {
                         "SPACE" :
                         String(CHAR_PALETTE[paletteIndex - PALETTE_ACTIONS]);
     drawLine(53, "Pick: [" + choice + "]");
-    drawLine(63, "Tap=pick Hold=cancel");
+    drawLine(63, "Hold Up=pick Dn=back");
   }
   display.sendBuffer();
 }
@@ -630,7 +621,7 @@ void serialCommand(const String& line) {
   else if (line == "d") shortButton(Button::Down);
   else if (line == "e") shortButton(Button::Select);
   else if (line == "b") longButton(Button::Back);
-  else if (line == "send") longButton(Button::Select);
+  else if (line == "send") sendMessage(draft);
   else if (line == "cancel") longButton(Button::Back);
   else if (line == "h" || line == "help")
     Serial.println(F("m <text>, s=status, r=retry radio, i=I2C scan, "
@@ -659,8 +650,8 @@ void setup() {
   delay(250);
   Serial.println(F("XIAO SX1262 handheld messaging"));
   Serial.println(F("Header Wio board; attach a 915 MHz antenna before TX."));
-  Serial.println(F("Controls: P0=UP P1=DOWN P3=ACTION "
-                   "(tap=select hold=back); P2 unused."));
+  Serial.println(F("Controls: tap P0/P1=up/down; "
+                   "hold P0=select, P1=back; P2/P3 unused."));
   Serial.printf("Radio pins NSS=%u DIO1=%u RST=%u BUSY=%u RF_SW=%u "
                 "SPI=%u/%u/%u I2C SDA=%u SCL=%u\n",
                 PIN_LORA_NSS, PIN_LORA_DIO1, PIN_LORA_RST, PIN_LORA_BUSY,

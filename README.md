@@ -17,7 +17,7 @@ maps XIAO D numbers to ESP32 GPIO numbers.
 
 | XIAO pad | GPIO | Wio header/net | Use in this project |
 | --- | ---: | --- | --- |
-| D0 | 1 | J1-1: Wio pushbutton to GND, 10 kΩ pull-up | Wio board button; left unused by the three-button UI |
+| D0 | 1 | J1-1: Wio pushbutton to GND, 10 kΩ pull-up | Wio board button; left unused by the two-button UI |
 | D1 | 2 | J1-2: radio DIO1 | Radio interrupt |
 | D2 | 3 | J1-3: radio reset | Radio reset |
 | D3 | 4 | J1-4: radio BUSY | Radio BUSY |
@@ -62,14 +62,13 @@ labels on the physical module**; connector order can vary.
 | OLED SCL | D7/GPIO44, Wio J2-7 | Alternate SCL |
 | PCF8574 VCC/GND | 3V3/GND | **PCF8574**, not PCF8574A; address `0x20` |
 | PCF8574 SDA/SCL | Same D6/D7 bus | Set A0, A1, A2 to GND; use 3.3 V I²C pull-ups (typically on a module, or add 4.7 kΩ each) |
-| UP button | PCF8574 P0 → GND when pressed | Active-low |
-| DOWN button | PCF8574 P1 → GND when pressed | Active-low |
-| Former SELECT button | PCF8574 P2 | **Unused by firmware** because its wired input did not register; disconnect or leave unpressed after checking it does not short power |
-| ACTION button (former BACK) | PCF8574 P3 → GND when pressed | Tap = select; hold 0.8 s = back/cancel |
+| UP button | PCF8574 P0 → GND when pressed | Tap = up; hold 0.8 s = select |
+| DOWN button | PCF8574 P1 → GND when pressed | Tap = down; hold 0.8 s = back/cancel |
+| Former SELECT/BACK inputs | PCF8574 P2/P3 | Ignored by firmware; remove these switches only with USB and LiPo power disconnected |
 
 Only D6 and D7 are free header GPIOs, so directly wired external buttons are
-impractical alongside the OLED. The PCF8574 places the three active controls
-on the existing I²C bus. No button resistors are needed on P0, P1, or P3 for
+impractical alongside the OLED. The PCF8574 places the two active controls
+on the existing I²C bus. No button resistors are needed on P0 or P1 for
 the PCF8574's weak high-state pull-ups. The Wio's built-in D0 button is
 independent of this UI.
 D6/D7 are also the XIAO's UART0 TX/RX pads; this build keeps serial diagnostics
@@ -104,16 +103,17 @@ Use an antenna suitable for 915 MHz on the Wio before any transmit test.
 
 ## Stage 2: Controls and messaging
 
-| State | UP / DOWN (P0/P1) | ACTION tap (P3) | ACTION hold 0.8 s (P3) |
-| --- | --- | --- | --- |
-| Browse | Older / newer of six recent messages | Open a new blank draft | Jump to newest message |
-| Compose | Cycle choices; hold to repeat | Pick the shown character or `SEND`/`DELETE` action | Cancel the draft and return to Browse |
+| State | UP tap (P0) | UP hold 0.8 s | DOWN tap (P1) | DOWN hold 0.8 s |
+| --- | --- | --- | --- | --- |
+| Browse | Older message | Open a new blank draft | Newer message | Jump to newest message |
+| Compose | Previous wheel choice | Pick shown character or `SEND`/`DELETE` | Next wheel choice | Cancel draft and return to Browse |
 
-The ACTION tap occurs on **release**, allowing the firmware to distinguish it
-from a hold. The physical P2 input is ignored. The character wheel contains
+Tap actions occur on **release**, so holding a button does not also move the
+selection. Auto-repeat is disabled; each tap moves one step. The former P2/P3
+button inputs are ignored. The character wheel contains
 `SEND`, `DELETE`, space, A–Z, a–z, digits, and common punctuation. Compose
 starts at `A`; one UP selects space, another UP selects `DELETE`, and a third
-UP selects `SEND`. Tap ACTION on a letter to append it, on `DELETE` to erase
+UP selects `SEND`. Hold UP on a letter to append it, on `DELETE` to erase
 the last character, or on `SEND` to transmit the draft. The draft limit is
 64 printable ASCII characters.
 The display shows recent inbound/outbound messages, `WAIT`, `ACK`, and `NO ACK`.
@@ -153,7 +153,7 @@ D6/D7 are I²C. Commands, each followed by Enter:
 | `o` | Force every OLED pixel on for three seconds using direct SSD1306 commands, then restore the message screen |
 | `r` | Retry radio initialization after checking hardware |
 | `m hello` | Send an ASCII message directly |
-| `u`, `d`, `e`, `b` | Simulate UP, DOWN, ACTION tap, ACTION hold/back for bench UI checks |
+| `u`, `d`, `e`, `b` | Simulate UP tap, DOWN tap, UP hold/select, DOWN hold/back for bench UI checks |
 | `send`, `cancel` | Send the current draft or cancel it via USB serial |
 | `h` | Print command help |
 
@@ -161,35 +161,33 @@ The OLED and button expander can be absent during initial bench checks;
 firmware continues with USB serial. Without the expander, use serial commands
 for composition and sending. Incoming frames and radio errors are logged.
 
-### Bring up the three active buttons
+### Bring up the two active buttons
 
 The selected [Comimark PCF8574T breakout](https://www.amazon.com/dp/B07X3KWQZ7)
 answers at `0x20`. The firmware writes `0xFF` so its port pins act as inputs;
 the [PCF8574 datasheet](https://www.nxp.com/docs/en/data-sheet/PCF8574_PCF8574A.pdf)
-describes the weak high current source. P2 is deliberately ignored after its
-SELECT switch failed to register. P0, P1, and P3 remain active.
+describes the weak high current source. P2 and P3 are ignored. Only P0 and P1
+drive the UI.
 
 1. Run `i`: expect `0x20` for the expander and `0x3C` (or `0x3D`) for the OLED.
    Run `s`: expect `buttons=ready`.
-2. Run `p` with the three active buttons released. P0, P1, and P3 should read
-   `up`. Hold one at a time: P0/UP, P1/DOWN, or P3/ACTION should change to
-   `PRESSED`; the serial monitor also logs stable presses and releases. P2's
-   reading is diagnostic only and does not trigger UI actions.
-3. Tap ACTION and release to enter Compose. Tap DOWN to move from `A` to `B`;
-   tap ACTION to append `B`. Tap UP to return to `A`, then UP to space, then
-   UP to `DELETE`; tap ACTION to erase the `B`. Hold ACTION to cancel and
-   return to Browse. This sequence does not transmit.
+2. Run `p` with both active buttons released. P0 and P1 should read `up`.
+   Hold one at a time: P0/UP or P1/DOWN should change to `PRESSED`; the monitor
+   logs presses, releases, taps, and holds. P2/P3 readings are diagnostic only.
+3. Hold UP for 0.8 s to enter Compose. Tap DOWN to move from `A` to `B`;
+   hold UP to append `B`. Tap UP to return to `A`, then UP to space, then UP
+   to `DELETE`; hold UP to erase `B`. Hold DOWN to cancel and return to Browse.
+   This sequence does not transmit.
 4. For a send test, compose a visible character, choose `SEND` on the wheel,
-   and tap ACTION. Attach a 915 MHz antenna and bring the peer online first.
+   and hold UP. Attach a 915 MHz antenna and bring the peer online first.
 
 If `i` shows only the OLED, check the expander's power and SDA/SCL contacts.
 If its address is not `0x20`, set `-DBUTTON_EXPANDER_ADDRESS=0xNN` in
 `platformio.ini` to the scanned address and rebuild. PCF8574 uses `0x20`–
 `0x27`; PCF8574A uses `0x38`–`0x3F`. Do not assign the expander the OLED's
-address. If a physical control stays `up` while held, fully remove USB and
-LiPo power, then test its P-pin-to-GND path for a near-zero resistance while
-pressed. Never use resistance or continuity mode while either power source is
-connected.
+address. If P0 or P1 stays `up` while held, fully remove USB and LiPo power,
+then test its P-pin-to-GND path for near-zero resistance while pressed. Never
+use resistance or continuity mode while either power source is connected.
 
 ### If the OLED has power but stays dark
 
@@ -230,8 +228,8 @@ a reliable bus. See the [ESP32-S3 I²C guidance](https://docs.espressif.com/proj
 ## Stage 3: Hardware checks and upload
 
 Confirm power and wiring before each hardware change. The OLED and PCF8574
-have been detected on the user's physical stack; the three-button ACTION
-mapping still needs its own on-device check after uploading this build.
+have been detected on the user's physical stack; the new two-button mapping
+still needs its own on-device check after uploading this build.
 
 1. Confirm the Wio board marking is the **header-connected V1.0 board** and
    the XIAO is the **standard ESP32-S3**. Inspect the D6/D7 taps and continuity
@@ -239,12 +237,12 @@ mapping still needs its own on-device check after uploading this build.
 2. With the stack unpowered, verify LiPo polarity at the XIAO battery pads and
    insulate/strain-relieve the joints. Keep the 5V pin away from the LiPo.
 3. Confirm OLED label-to-wire mapping, 3.3 V supply, PCF8574 address straps,
-   and that I²C pull-ups go to 3.3 V. Check the UP, DOWN, and ACTION switches
-   connect P0, P1, and P3 respectively to GND when pressed. P2 is ignored.
+   and that I²C pull-ups go to 3.3 V. Check UP and DOWN connect P0 and P1
+   respectively to GND when pressed. P2 and P3 are ignored.
 4. Attach a 915 MHz antenna. Then connect USB and inspect the board's charge
    LED according to the [Seeed battery instructions](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/#battery-usage).
 5. Once wiring is confirmed, build and upload from PlatformIO. Use `i` to see
-   `0x3C` and `0x20`; use `s` to verify `radio=ready`. Test the three active
+   `0x3C` and `0x20`; use `s` to verify `radio=ready`. Test the two active
    controls with the no-transmit sequence above, then compose a short message
    using the `SEND` wheel action and verify that the Cardputer sees it and the
    display changes from `WAIT` to `ACK`. Repeat with the Cardputer offline to
